@@ -132,6 +132,7 @@ export default function Home() {
                         tableData={solution.tableData} 
                         method={selectedMethod}
                         iterations={solution.iterations}
+                        canonicalForm={solution.canonicalForm}
                       />
                     )}
                   </TabsContent>
