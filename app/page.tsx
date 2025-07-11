@@ -128,7 +128,11 @@ export default function Home() {
                   
                   <TabsContent value="table" className="mt-6">
                     {solution.tableData && (
-                      <ResultsTable tableData={solution.tableData} method={selectedMethod} />
+                      <ResultsTable 
+                        tableData={solution.tableData} 
+                        method={selectedMethod}
+                        iterations={solution.iterations}
+                      />
                     )}
                   </TabsContent>
                 </Tabs>

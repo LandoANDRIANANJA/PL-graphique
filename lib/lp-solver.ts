@@ -10,6 +10,17 @@ export type LPProblem = {
 
 export type SolutionMethod = 'graphical' | 'simplex' | 'general'
 
+export type SimplexIteration = {
+  iteration: number
+  tableau: number[][]
+  basis: string[]
+  pivot: { row: number; col: number } | null
+  ratios?: number[]
+  enteringVariable?: string
+  leavingVariable?: string
+  isOptimal: boolean
+}
+
 export type LPSolution = {
   isValid: boolean
   coordinates: number[]
@@ -18,6 +29,7 @@ export type LPSolution = {
     headers: string[]
     rows: string[][]
   }
+  iterations?: SimplexIteration[]
 }
 
 function generalFormMethod(
@@ -80,26 +92,20 @@ function simplexMethod(
   constraintValues: number[],
   isMaximization: boolean
 ): LPSolution {
+  const iterations: SimplexIteration[] = [];
+  
   // Convert minimization to maximization
   const objective = isMaximization 
     ? [...objectiveFunction]
     : objectiveFunction.map(x => -x);
 
-  // Initialize tableau
   const m = constraintCoefficients.length; // number of constraints
   const n = objectiveFunction.length; // number of variables
   
-  // Create initial tableau
+  // Create initial tableau following the exact format from images
   const tableau: number[][] = [];
   
-  // Add objective function row
-  tableau.push([
-    ...objective.map(x => -x),
-    ...Array(m).fill(0),
-    0
-  ]);
-  
-  // Add constraint rows
+  // Add constraint rows first
   for (let i = 0; i < m; i++) {
     const row = [
       ...constraintCoefficients[i],
@@ -110,33 +116,77 @@ function simplexMethod(
     tableau.push(row);
   }
   
-  const basis = Array(m).fill(0).map((_, i) => n + i);
-  const nonBasis = Array(n).fill(0).map((_, i) => i);
+  // Add objective function row (Cj row)
+  const cjRow = [
+    ...objective,
+    ...Array(m).fill(0),
+    0
+  ];
+  tableau.push(cjRow);
   
-  // Iterate until optimal
+  // Add Δj row (initially same as Cj for maximization)
+  const djRow = [...cjRow];
+  tableau.push(djRow);
+  
+  // Initial basis (slack variables)
+  let basis = Array(m).fill(0).map((_, i) => `A${n + i + 1}`);
+  
+  // Variable names for headers
+  const variableNames = [];
+  for (let i = 0; i < n; i++) {
+    variableNames.push(`A${i + 1}`);
+  }
+  for (let i = 0; i < m; i++) {
+    variableNames.push(`A${n + i + 1}`);
+  }
+  variableNames.push('A0');
+  
   let iteration = 0;
   const maxIterations = 100;
   
+  // Store initial tableau
+  iterations.push({
+    iteration: 0,
+    tableau: tableau.map(row => [...row]),
+    basis: [...basis],
+    pivot: null,
+    isOptimal: false
+  });
+  
   while (iteration < maxIterations) {
-    // Find entering variable (most negative coefficient in objective row)
-    const enteringCol = tableau[0].slice(0, -1).reduce(
-      (iMin, x, i) => x < tableau[0][iMin] ? i : iMin,
-      0
-    );
+    // Check optimality condition - find most positive in Δj row for maximization
+    const djRowIndex = tableau.length - 1;
+    let enteringCol = -1;
+    let maxPositive = 0;
     
-    if (tableau[0][enteringCol] >= -1e-10) break; // Optimal solution found
+    for (let j = 0; j < tableau[djRowIndex].length - 1; j++) {
+      if (tableau[djRowIndex][j] > maxPositive) {
+        maxPositive = tableau[djRowIndex][j];
+        enteringCol = j;
+      }
+    }
     
-    // Find leaving variable (minimum ratio test)
+    if (enteringCol === -1 || maxPositive <= 1e-10) {
+      // Optimal solution found
+      iterations[iterations.length - 1].isOptimal = true;
+      break;
+    }
+    
+    // Find leaving variable using minimum ratio test
     let leavingRow = -1;
     let minRatio = Infinity;
+    const ratios: number[] = [];
     
-    for (let i = 1; i < tableau.length; i++) {
-      if (tableau[i][enteringCol] <= 0) continue;
-      
-      const ratio = tableau[i][tableau[i].length - 1] / tableau[i][enteringCol];
-      if (ratio < minRatio) {
-        minRatio = ratio;
-        leavingRow = i;
+    for (let i = 0; i < m; i++) {
+      if (tableau[i][enteringCol] > 1e-10) {
+        const ratio = tableau[i][tableau[i].length - 1] / tableau[i][enteringCol];
+        ratios.push(ratio);
+        if (ratio < minRatio) {
+          minRatio = ratio;
+          leavingRow = i;
+        }
+      } else {
+        ratios.push(Infinity);
       }
     }
     
@@ -146,32 +196,46 @@ function simplexMethod(
         isValid: false,
         coordinates: [],
         value: 0,
-        tableData: { headers: [], rows: [] }
+        tableData: { headers: [], rows: [] },
+        iterations
       };
     }
     
-    // Pivot
+    const enteringVariable = variableNames[enteringCol];
+    const leavingVariable = basis[leavingRow];
+    
+    // Store current iteration with pivot information
+    iterations.push({
+      iteration: iteration + 1,
+      tableau: tableau.map(row => [...row]),
+      basis: [...basis],
+      pivot: { row: leavingRow, col: enteringCol },
+      ratios: [...ratios],
+      enteringVariable,
+      leavingVariable,
+      isOptimal: false
+    });
+    
+    // Perform pivot operation
     const pivot = tableau[leavingRow][enteringCol];
     
-    // Scale pivot row
+    // Step 1: Divide pivot row by pivot element (F1)
     for (let j = 0; j < tableau[leavingRow].length; j++) {
       tableau[leavingRow][j] /= pivot;
     }
     
-    // Eliminate column
+    // Step 2: Update other rows (F2)
     for (let i = 0; i < tableau.length; i++) {
-      if (i === leavingRow) continue;
-      
-      const factor = tableau[i][enteringCol];
-      for (let j = 0; j < tableau[i].length; j++) {
-        tableau[i][j] -= factor * tableau[leavingRow][j];
+      if (i !== leavingRow) {
+        const factor = tableau[i][enteringCol];
+        for (let j = 0; j < tableau[i].length; j++) {
+          tableau[i][j] -= factor * tableau[leavingRow][j];
+        }
       }
     }
     
     // Update basis
-    const temp = basis[leavingRow - 1];
-    basis[leavingRow - 1] = nonBasis[enteringCol];
-    nonBasis[enteringCol] = temp;
+    basis[leavingRow] = enteringVariable;
     
     iteration++;
   }
@@ -181,36 +245,61 @@ function simplexMethod(
       isValid: false,
       coordinates: [],
       value: 0,
-      tableData: { headers: [], rows: [] }
+      tableData: { headers: [], rows: [] },
+      iterations
     };
   }
   
   // Extract solution
   const solution = Array(n).fill(0);
-  basis.forEach((basisVar, i) => {
-    if (basisVar < n) {
-      solution[basisVar] = tableau[i + 1][tableau[i + 1].length - 1];
+  for (let i = 0; i < m; i++) {
+    const varName = basis[i];
+    const varIndex = parseInt(varName.substring(1)) - 1;
+    if (varIndex < n) {
+      solution[varIndex] = tableau[i][tableau[i].length - 1];
     }
-  });
+  }
   
-  // Create table data for visualization
-  const headers = ['Basic', 'Z'];
-  for (let i = 0; i < n; i++) headers.push(`x${i + 1}`);
-  for (let i = 0; i < m; i++) headers.push(`s${i + 1}`);
-  headers.push('RHS');
+  const finalValue = isMaximization ? 
+    -tableau[tableau.length - 1][tableau[0].length - 1] : 
+    tableau[tableau.length - 1][tableau[0].length - 1];
   
-  const rows = tableau.map((row, i) => {
-    if (i === 0) {
-      return ['Z', '1', ...row.map(x => x.toFixed(2))];
-    }
-    return [`s${i}`, '0', ...row.map(x => x.toFixed(2))];
-  });
+  // Create detailed table data for final iteration
+  const headers = ['Ci', 'i', ...variableNames];
+  const rows: string[][] = [];
+  
+  // Add constraint rows with Ci values
+  for (let i = 0; i < m; i++) {
+    const basisVarIndex = parseInt(basis[i].substring(1)) - 1;
+    const ci = basisVarIndex < n ? objective[basisVarIndex] : 0;
+    const row = [
+      ci.toString(),
+      basis[i],
+      ...tableau[i].map(x => x.toFixed(2))
+    ];
+    rows.push(row);
+  }
+  
+  // Add Cj row
+  rows.push([
+    'Cj',
+    '',
+    ...tableau[tableau.length - 2].map(x => x.toFixed(2))
+  ]);
+  
+  // Add Δj row
+  rows.push([
+    'Δj',
+    '',
+    ...tableau[tableau.length - 1].map(x => x.toFixed(2))
+  ]);
   
   return {
     isValid: true,
     coordinates: solution,
-    value: isMaximization ? tableau[0][tableau[0].length - 1] : -tableau[0][tableau[0].length - 1],
-    tableData: { headers, rows }
+    value: Math.abs(finalValue),
+    tableData: { headers, rows },
+    iterations
   };
 }
 
